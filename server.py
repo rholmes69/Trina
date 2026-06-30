@@ -187,7 +187,8 @@ async def ws_session(browser: WebSocket):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    host = "localhost"
-    port = 8080
-    print(f"Trina is live → http://{host}:{port}")
+    host       = "localhost"
+    port       = 8080
+    agent_name = os.getenv("AGENT_NAME", "Trina")
+    print(f"{agent_name} is live → http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")

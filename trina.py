@@ -246,11 +246,12 @@ def run(text_mode: bool) -> None:
     # Start reminder background thread
     threading.Thread(target=_reminder_worker, daemon=True).start()
 
-    wake_hint = " · Wake word active" if WAKE_WORD_ENABLED else ""
+    agent_name = os.getenv("AGENT_NAME", "Trina")
+    wake_hint  = " · Wake word active" if WAKE_WORD_ENABLED else ""
     mode_hint  = "Type to talk" if text_mode else "Speak to talk"
     console.print(
         Panel(
-            f"[bold]Trina[/bold]  ·  personal life OS\n"
+            f"[bold]{agent_name}[/bold]  ·  personal life OS\n"
             f"[dim]{mode_hint}  ·  Ctrl+C to quit  ·  "
             f"Open web/index.html  ·  ws://localhost:{WS_PORT}{wake_hint}[/dim]",
             border_style="cyan",
