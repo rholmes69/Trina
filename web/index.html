@@ -163,6 +163,7 @@ body[data-state="speaking"]  #status-label { color: #2266cc; }
   color: #0d1a36;
   letter-spacing: 12px;
   font-size: 12px;
+  transition: color 0.6s;
 }
 
 /* ── conversation log ── */
@@ -216,6 +217,7 @@ body[data-state="speaking"]  #status-label { color: #2266cc; }
   color: #1b3070;
   letter-spacing: 16px;
   font-size: 18px;
+  transition: color 0.6s;
 }
 #overlay .sub {
   color: #0d1a40;
@@ -227,9 +229,13 @@ body[data-state="speaking"]  #status-label { color: #2266cc; }
   border-radius: 50%;
   background: #0044cc;
   animation: dot-blink 1.8s ease-in-out infinite;
+  transition: background 0.6s;
 }
 @keyframes dot-blink { 0%,100%{opacity:.2;transform:scale(1)} 50%{opacity:1;transform:scale(1.5)} }
 </style>
+
+<!-- Dynamic ring-color theme — overrides static CSS above; written by applyRingColor() -->
+<style id="ring-theme"></style>
 </head>
 <body data-state="idle">
 
@@ -254,6 +260,148 @@ body[data-state="speaking"]  #status-label { color: #2266cc; }
 <div id="log"></div>
 
 <script>
+// ── Ring color theming ────────────────────────────────────────────────────────
+
+let ringRgb  = [0, 70, 220];   // canvas ring color (RGB) — updated by applyRingColor
+let thinkRgb = [100, 0, 220];  // canvas thinking ring color
+
+function hexToRgb(hex) {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b), l = (max+min)/2;
+  if (max === min) return [0, 0, Math.round(l*100)];
+  const d = max - min;
+  const s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+  let hh;
+  if      (max === r) hh = ((g-b)/d + (g<b?6:0))/6;
+  else if (max === g) hh = ((b-r)/d + 2)/6;
+  else                hh = ((r-g)/d + 4)/6;
+  return [Math.round(hh*360), Math.round(s*100), Math.round(l*100)];
+}
+
+function hslToRgb(h, s, l) {
+  h /= 360; s /= 100; l /= 100;
+  if (s === 0) { const v = Math.round(l*255); return [v,v,v]; }
+  const q = l < 0.5 ? l*(1+s) : l+s-l*s;
+  const p = 2*l - q;
+  const hue2rgb = (t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q-p)*6*t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q-p)*(2/3-t)*6;
+    return p;
+  };
+  return [Math.round(hue2rgb(h+1/3)*255), Math.round(hue2rgb(h)*255), Math.round(hue2rgb(h-1/3)*255)];
+}
+
+function applyRingColor(hex) {
+  const [r, g, b] = hexToRgb(hex);
+  ringRgb = [r, g, b];
+
+  const [h, s] = rgbToHsl(r, g, b);
+  const gs = Math.max(s, 55);  // glow saturation floor — keeps dim colors vivid
+
+  // Thinking: always violet (hue 270) for consistent "deep focus" visual
+  thinkRgb = hslToRgb(270, 80, 50);
+
+  // Text — dark, readable against near-black background
+  const [txR,txG,txB] = hslToRgb(h, 40, 22);
+  const [hiR,hiG,hiB] = hslToRgb(h, 45, 38);
+
+  // Status label — slightly brighter so it's readable
+  const [slR,slG,slB] = hslToRgb(h, gs, 40);
+  const [stR,stG,stB] = hslToRgb(270, 70, 42);
+
+  // Trina message text
+  const [tmR,tmG,tmB] = hslToRgb(h, gs, 35);
+
+  // Shorthand hsla builders
+  const hs  = (l,a) => `hsla(${h},${gs}%,${l}%,${a})`;
+  const hst = (l,a) => `hsla(270,80%,${l}%,${a})`;
+
+  document.getElementById('ring-theme').textContent = `
+:root {
+  --blue: hsl(${h},${gs}%,55%);
+  --glow: hsla(${h},${gs}%,55%,0.18);
+  --dim:  hsla(${h},${gs}%,55%,0.08);
+  --text: rgb(${txR},${txG},${txB});
+  --text-hi: rgb(${hiR},${hiG},${hiB});
+}
+.orb-sphere {
+  box-shadow:
+    0 0 0 1px   ${hs(48,0.20)},
+    0 0 50px    ${hs(50,0.40)},
+    0 0 130px   ${hs(38,0.50)},
+    0 0 260px   ${hs(28,0.30)},
+    inset 0 0 70px  ${hs(22,0.85)},
+    inset 0 0 30px  ${hs(45,0.30)};
+}
+.orb-glow {
+  background: radial-gradient(circle, ${hs(55,0.18)} 0%, ${hs(42,0.08)} 45%, transparent 70%);
+}
+.orb-rim { border-color: ${hs(50,0.15)}; }
+
+body[data-state="listening"] .orb-sphere {
+  box-shadow:
+    0 0 0 1px   ${hs(55,0.30)},
+    0 0 60px    ${hs(58,0.50)},
+    0 0 150px   ${hs(44,0.60)},
+    0 0 300px   ${hs(32,0.40)},
+    inset 0 0 80px  ${hs(26,0.90)},
+    inset 0 0 40px  ${hs(50,0.40)};
+}
+body[data-state="listening"] .orb-glow {
+  background: radial-gradient(circle, ${hs(60,0.22)} 0%, ${hs(44,0.10)} 45%, transparent 70%);
+}
+body[data-state="listening"] .orb-rim { border-color: ${hs(55,0.30)}; }
+
+body[data-state="thinking"] .orb-sphere {
+  box-shadow:
+    0 0 0 1px   ${hst(50,0.35)},
+    0 0 70px    ${hst(52,0.55)},
+    0 0 160px   ${hst(44,0.55)},
+    0 0 320px   ${hst(32,0.35)},
+    inset 0 0 90px  ${hst(25,0.90)},
+    inset 0 0 45px  ${hst(50,0.45)};
+}
+body[data-state="thinking"] .orb-glow {
+  background: radial-gradient(circle, ${hst(55,0.18)} 0%, ${hst(38,0.08)} 45%, transparent 70%);
+}
+body[data-state="thinking"] .orb-rim { border-color: ${hst(50,0.30)}; }
+
+body[data-state="speaking"] .orb-sphere {
+  box-shadow:
+    0 0 0 1px   ${hs(60,0.55)},
+    0 0 80px    ${hs(62,0.65)},
+    0 0 200px   ${hs(50,0.70)},
+    0 0 380px   ${hs(38,0.45)},
+    inset 0 0 100px ${hs(34,0.90)},
+    inset 0 0 50px  ${hs(56,0.55)};
+}
+body[data-state="speaking"] .orb-glow {
+  background: radial-gradient(circle, ${hs(65,0.25)} 0%, ${hs(50,0.12)} 45%, transparent 70%);
+}
+body[data-state="speaking"] .orb-rim { border-color: ${hs(60,0.55)}; }
+
+body[data-state="listening"] #status-label { color: rgb(${slR},${slG},${slB}); }
+body[data-state="thinking"]  #status-label { color: rgb(${stR},${stG},${stB}); }
+body[data-state="speaking"]  #status-label { color: rgb(${slR},${slG},${slB}); }
+
+.msg.trina { color: rgb(${tmR},${tmG},${tmB}); background: rgba(${tmR},${tmG},${tmB},0.08); }
+
+#overlay .dot   { background: hsl(${h},${gs}%,50%); }
+#overlay .title { color: hsl(${h},${Math.min(gs,40)}%,18%); }
+#name-label     { color: hsl(${h},${Math.min(gs,40)}%,12%); }
+`;
+}
+
+// Apply default theme immediately — overwritten when server sends config
+applyRingColor('#0055ff');
+
 // ── Canvas / rings ─────────────────────────────────────────────────────────────
 const canvas = document.getElementById('canvas');
 const ctx    = canvas.getContext('2d');
@@ -272,7 +420,7 @@ function spawnRing() {
     r:     132,
     alpha: s === 'speaking' ? 0.6 : s === 'listening' ? 0.4 : 0.2,
     speed: s === 'speaking' ? 3.0 : s === 'listening' ? 1.8 : 1.0,
-    color: s === 'thinking' ? '80,0,220' : '0,70,220',
+    color: s === 'thinking' ? thinkRgb.join(',') : ringRgb.join(','),
   });
 }
 
@@ -302,16 +450,21 @@ function drawFrame() {
   if (state() === 'speaking' && analyser) {
     analyser.getByteFrequencyData(dataArray);
     const BARS = 80;
+    const [br, bg, bb] = ringRgb;
     for (let i = 0; i < BARS; i++) {
       const angle  = (i / BARS) * Math.PI * 2 - Math.PI / 2;
       const sample = dataArray[Math.floor(i * dataArray.length / BARS)] / 255;
       if (sample < 0.02) continue;
       const r0 = 132, r1 = r0 + sample * 100;
-      const g  = Math.round(130 + sample * 125);
+      // Brighten ring color toward white as amplitude increases
+      const bright = 0.4 + sample * 0.6;
+      const cr = Math.min(255, Math.round(br + (255-br) * bright * 0.55));
+      const cg = Math.min(255, Math.round(bg + (255-bg) * bright * 0.55));
+      const cb = Math.min(255, Math.round(bb + (255-bb) * bright * 0.55));
       ctx.beginPath();
       ctx.moveTo(cx + Math.cos(angle) * r0, cy + Math.sin(angle) * r0);
       ctx.lineTo(cx + Math.cos(angle) * r1, cy + Math.sin(angle) * r1);
-      ctx.strokeStyle = `rgba(0,${g},255,${(0.25 + sample * 0.75).toFixed(2)})`;
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${(0.25 + sample * 0.75).toFixed(2)})`;
       ctx.lineWidth = 2;
       ctx.stroke();
     }
@@ -409,7 +562,6 @@ function connect() {
 
   ws.onmessage = ({ data }) => {
     if (data instanceof ArrayBuffer) {
-      // WAV audio from Gemini TTS
       audioQueue.push(data.slice(0));
       if (!audioPlaying) playNext();
       return;
@@ -417,10 +569,21 @@ function connect() {
 
     const msg = JSON.parse(data);
 
+    // ── Agent config (ring color + name) ─────────────────────────────────────
+    if (msg.type === 'config') {
+      if (msg.ring_color) applyRingColor(msg.ring_color);
+      if (msg.agent_name) {
+        const spaced = msg.agent_name.toUpperCase().split('').join(' ');
+        document.getElementById('name-label').textContent = spaced;
+        document.querySelector('#overlay .title').textContent = spaced;
+        document.title = msg.agent_name;
+      }
+      return;
+    }
+
     if (msg.type === 'state') {
       setState(msg.value);
 
-      // When returning to listening after speaking, wait for audio to drain
       if (msg.value === 'listening') {
         const drain = setInterval(() => {
           if (!audioPlaying) { setState('listening'); clearInterval(drain); }
@@ -431,7 +594,6 @@ function connect() {
     if (msg.type === 'transcript') {
       if (msg.is_final) {
         if (liveEl) { liveEl.remove(); liveEl = null; }
-        // Don't add final transcript yet — wait for trina_text to pair it
       } else {
         if (!liveEl) { liveEl = addMsg('', 'live'); }
         liveEl.textContent = msg.text;
@@ -439,9 +601,7 @@ function connect() {
     }
 
     if (msg.type === 'trina_text') {
-      // Finalise the user utterance that triggered this
       if (liveEl) { liveEl.remove(); liveEl = null; }
-      // Find and promote any pending transcript
       addMsg(msg.text, 'trina');
     }
   };

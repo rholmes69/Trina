@@ -56,13 +56,26 @@ async def _call_claude(history: list[dict]) -> str:
 
 # ── WebSocket session ─────────────────────────────────────────────────────────
 
+def _agent_config() -> dict:
+    """Current agent config snapshot — sent to browser so UI matches active profile."""
+    return {
+        "type":        "config",
+        "ring_color":  os.getenv("AGENT_RING_COLOR", "#0055ff"),
+        "agent_name":  os.getenv("AGENT_NAME",       "Trina"),
+    }
+
+
 @app.websocket("/ws")
 async def ws_session(browser: WebSocket):
     await browser.accept()
 
+    # Push ring color + agent name immediately so UI theme matches startup profile
+    await browser.send_json(_agent_config())
+
     history: list[dict] = []
     parts: list[str]    = []
     busy                = asyncio.Lock()
+    _last_config: dict  = _agent_config()
 
     try:
         from websockets.asyncio.client import connect as dg_connect
@@ -138,6 +151,12 @@ async def ws_session(browser: WebSocket):
                             history.append({"role": "user", "content": user_text})
                             reply = await _call_claude(history)
                             history.append({"role": "assistant", "content": reply})
+
+                            # Push updated config if a profile switch changed ring color or name
+                            new_cfg = _agent_config()
+                            if new_cfg != _last_config:
+                                _last_config.update(new_cfg)
+                                await browser.send_json(new_cfg)
 
                             print(f"[trina] ← Claude: {reply!r}", flush=True)
                             await browser.send_json({"type": "trina_text", "text": reply})
