@@ -28,12 +28,89 @@ _provider        = os.getenv("LLM_PROVIDER",    "anthropic")   # "anthropic" | "
 _ollama_model    = os.getenv("OLLAMA_MODEL",    "kimi-k2")
 _ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
-# ── System prompt ─────────────────────────────────────────────────────────────
+# ── Security permission definitions ──────────────────────────────────────────
+#
+# DEFAULT_PERMISSIONS seeds the DB on first run — rows already in the DB are
+# never overwritten, so users can toggle without losing their state on restart.
+#
+# Level semantics:
+#   low      — read-only, no side effects
+#   medium   — writes data inside Trina's own workspace/DB
+#   high     — significant real-world actions (AI model switch, email, calendar)
+#   critical — irreversible or system-level operations
 
-SYSTEM_PROMPT = f"""\
-You are Trina, a personal life assistant running on the user's desktop.
+DEFAULT_PERMISSIONS: list[tuple[str, str, bool, str]] = [
+    # name                  level       on?    description
+    ("camera_view",         "low",      True,  "View through webcam or describe image files"),
+    ("memory_read",         "low",      True,  "Read stored memories"),
+    ("habit_read",          "low",      True,  "View habits and streaks"),
+    ("reminder_read",       "low",      True,  "View pending reminders"),
+    ("write_workspace",     "medium",   True,  "Create files and folders in workspace"),
+    ("generate_data",       "medium",   True,  "Generate CSV and data files"),
+    ("memory_write",        "medium",   True,  "Store and delete memories"),
+    ("reminder_write",      "medium",   True,  "Set and cancel reminders"),
+    ("habit_write",         "medium",   True,  "Add, log, and delete habits"),
+    ("switch_model",        "high",     True,  "Switch AI model or LLM provider"),
+    ("switch_profile",      "high",     True,  "Switch agent profile and persona"),
+    ("email_send",          "high",     False, "Send emails on behalf of the user"),
+    ("calendar_write",      "high",     False, "Create or modify calendar events"),
+    ("system_execute",      "critical", False, "Execute system commands or open applications"),
+    ("memory_clear",        "critical", False, "Clear all stored memories permanently"),
+    ("file_delete",         "critical", False, "Delete files from the workspace"),
+]
 
-Personality: warm, concise, and practical — like a very competent friend.
+# Maps each tool name → the permission it requires.  Omitted tools are always allowed.
+TOOL_PERMISSIONS: dict[str, str] = {
+    # low
+    "describe_camera":       "camera_view",
+    "describe_image":        "camera_view",
+    "recall":                "memory_read",
+    "list_memories":         "memory_read",
+    "list_reminders":        "reminder_read",
+    "habit_status":          "habit_read",
+    # medium
+    "create_folder":         "write_workspace",
+    "write_file":            "write_workspace",
+    "generate_contacts_csv": "generate_data",
+    "remember":              "memory_write",
+    "forget":                "memory_write",
+    "set_reminder":          "reminder_write",
+    "cancel_reminder":       "reminder_write",
+    "add_habit":             "habit_write",
+    "log_habit":             "habit_write",
+    "delete_habit":          "habit_write",
+    # high
+    "switch_model":          "switch_model",
+    "switch_profile":        "switch_profile",
+    # Permission management tools themselves are always accessible (not listed here)
+}
+
+_LEVEL_WARNINGS: dict[str, str] = {
+    "high":     "HIGH permission enabled - the agent can now take significant actions.",
+    "critical": "CRITICAL permission enabled - the agent can now take irreversible actions. Disable when not needed.",
+}
+
+_PERMISSION_LEVELS = {"low", "medium", "high", "critical"}
+
+# ── System prompt (rebuilt dynamically from the active profile) ───────────────
+
+def _build_system_prompt() -> str:
+    name        = os.getenv("AGENT_NAME",        "Trina")
+    personality = os.getenv("AGENT_PERSONALITY", "warm, concise, and practical — like a very competent friend")
+    gender      = os.getenv("AGENT_GENDER",      "")
+    age         = os.getenv("AGENT_AGE",         "")
+
+    identity_parts = []
+    if gender:
+        identity_parts.append(f"Gender: {gender}.")
+    if age:
+        identity_parts.append(f"Apparent age: {age}.")
+    identity_block = ("\n" + "  ".join(identity_parts) + "\n") if identity_parts else "\n"
+
+    return f"""\
+You are {name}, a personal life assistant running on the user's desktop.
+{identity_block}\
+Personality: {personality}.
 Mode: reactive. You speak only when spoken to; never volunteer unprompted.
 
 You have tools that let you create folders, write files, and generate data on
@@ -57,6 +134,18 @@ to them.
 
 You can see through the webcam (describe_camera) or describe any image file
 in the workspace (describe_image). These always use Claude vision.
+
+You can switch your own profile via switch_profile if the user wants a different
+assistant persona. Use list_profiles to see what is available.
+
+You operate under a tiered security permission system. Every tool has an
+associated permission (low / medium / high / critical). If a tool call is
+blocked, the result will say [PERMISSION DENIED] — relay this to the user
+clearly and tell them exactly which permission to enable. Never attempt to
+work around a denied permission. Use list_permissions to show the current
+permission state, enable_permission to turn one on, and disable_permission
+to turn one off. Always confirm with the user before enabling HIGH or CRITICAL
+permissions, and remind them to disable CRITICAL permissions when done.
 
 When you finish a task, confirm it's done and mention the file or folder name.
 Keep replies brief unless the user asks for depth.\
@@ -164,11 +253,133 @@ def _init_db() -> None:
             UNIQUE(habit_id, checked_date)
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS permissions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            level       TEXT NOT NULL CHECK(level IN ('low','medium','high','critical')),
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            description TEXT NOT NULL DEFAULT '',
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
     con.commit()
     con.close()
 
 
 _init_db()
+
+
+# ── Security permission helpers ───────────────────────────────────────────────
+
+def _seed_permissions() -> None:
+    """Insert missing permissions with defaults. Never overwrites existing rows."""
+    con = sqlite3.connect(MEMORY_DB)
+    for name, level, enabled, description in DEFAULT_PERMISSIONS:
+        con.execute(
+            "INSERT OR IGNORE INTO permissions (name, level, enabled, description) VALUES (?,?,?,?)",
+            (name, level, int(enabled), description),
+        )
+    con.commit()
+    con.close()
+
+
+def _check_permission(permission: str) -> tuple[bool, str]:
+    """Return (allowed, denial_msg). denial_msg is '' when allowed."""
+    con = sqlite3.connect(MEMORY_DB)
+    row = con.execute(
+        "SELECT enabled, level FROM permissions WHERE name=?", (permission,)
+    ).fetchone()
+    con.close()
+    if not row:
+        return True, ""  # unrecognised permission → allow by default
+    enabled, level = bool(row[0]), row[1]
+    if enabled:
+        return True, ""
+    return False, (
+        f"[PERMISSION DENIED] '{permission}' ({level.upper()}) is off. "
+        f"Say 'enable {permission} permission' to turn it on."
+    )
+
+
+def list_permissions() -> str:
+    con = sqlite3.connect(MEMORY_DB)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        """SELECT name, level, enabled, description FROM permissions
+           ORDER BY CASE level
+               WHEN 'low'      THEN 1 WHEN 'medium'   THEN 2
+               WHEN 'high'     THEN 3 WHEN 'critical' THEN 4
+           END, name"""
+    ).fetchall()
+    con.close()
+    if not rows:
+        return "No permissions configured."
+
+    lines: list[str] = ["Security Permissions", "=" * 20]
+    cur_level: str | None = None
+    for row in rows:
+        if row["level"] != cur_level:
+            cur_level = row["level"]
+            lines.append(f"\n{cur_level.upper()}")
+        status = "[on] " if row["enabled"] else "[off]"
+        lines.append(f"  {status} {row['name']:<20} - {row['description']}")
+    return "\n".join(lines)
+
+
+def enable_permission(name: str) -> str:
+    con = sqlite3.connect(MEMORY_DB)
+    if name.lower() in _PERMISSION_LEVELS:
+        level = name.lower()
+        con.execute(
+            "UPDATE permissions SET enabled=1, updated_at=datetime('now') WHERE level=?", (level,)
+        )
+        count = con.execute("SELECT changes()").fetchone()[0]
+        con.commit()
+        con.close()
+        warn = f" {_LEVEL_WARNINGS[level]}" if level in _LEVEL_WARNINGS else ""
+        return f"All {level.upper()} permissions enabled ({count} total).{warn}"
+
+    row = con.execute("SELECT level FROM permissions WHERE name=?", (name,)).fetchone()
+    if not row:
+        con.close()
+        return f"Unknown permission '{name}'. Say 'list permissions' to see options."
+    level = row[0]
+    con.execute(
+        "UPDATE permissions SET enabled=1, updated_at=datetime('now') WHERE name=?", (name,)
+    )
+    con.commit()
+    con.close()
+    warn = f" {_LEVEL_WARNINGS[level]}" if level in _LEVEL_WARNINGS else ""
+    return f"Permission '{name}' ({level.upper()}) enabled.{warn}"
+
+
+def disable_permission(name: str) -> str:
+    con = sqlite3.connect(MEMORY_DB)
+    if name.lower() in _PERMISSION_LEVELS:
+        level = name.lower()
+        con.execute(
+            "UPDATE permissions SET enabled=0, updated_at=datetime('now') WHERE level=?", (level,)
+        )
+        count = con.execute("SELECT changes()").fetchone()[0]
+        con.commit()
+        con.close()
+        return f"All {level.upper()} permissions disabled ({count} total)."
+
+    row = con.execute("SELECT level FROM permissions WHERE name=?", (name,)).fetchone()
+    if not row:
+        con.close()
+        return f"Unknown permission '{name}'. Say 'list permissions' to see options."
+    level = row[0]
+    con.execute(
+        "UPDATE permissions SET enabled=0, updated_at=datetime('now') WHERE name=?", (name,)
+    )
+    con.commit()
+    con.close()
+    return f"Permission '{name}' ({level.upper()}) disabled."
+
+
+_seed_permissions()
 
 
 def _refresh_memory_doc() -> None:
@@ -580,8 +791,25 @@ def generate_contacts_csv(path: str, count: int) -> str:
 
 def execute_tool(name: str, inputs: dict) -> str:
     try:
+        # ── Permission gate ───────────────────────────────────────────────────
+        required = TOOL_PERMISSIONS.get(name)
+        if required:
+            allowed, denial_msg = _check_permission(required)
+            if not allowed:
+                return denial_msg
+
+        if name == "list_permissions":
+            return list_permissions()
+        if name == "enable_permission":
+            return enable_permission(inputs["name"])
+        if name == "disable_permission":
+            return disable_permission(inputs["name"])
         if name == "switch_model":
             return switch_model(inputs["provider"], inputs.get("model", ""))
+        if name == "switch_profile":
+            return switch_profile(inputs["name"])
+        if name == "list_profiles":
+            return list_profiles()
         if name == "set_reminder":
             return set_reminder(inputs["message"], inputs["when"])
         if name == "list_reminders":
@@ -622,6 +850,78 @@ def execute_tool(name: str, inputs: dict) -> str:
 # ── Tool schema ───────────────────────────────────────────────────────────────
 
 TOOL_DEFINITIONS = [
+    # ── Permission management (always accessible, no permission gate) ──────────
+    {
+        "name": "list_permissions",
+        "description": (
+            "Show all security permissions grouped by level (low / medium / high / critical) "
+            "with their current on/off state. Call this when the user asks what the agent "
+            "is allowed to do, or wants to review security settings."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "enable_permission",
+        "description": (
+            "Turn on a specific permission by name, or enable all permissions of a given "
+            "level by passing 'low', 'medium', 'high', or 'critical'. "
+            "HIGH and CRITICAL permissions trigger a safety warning. "
+            "Always confirm with the user before enabling high or critical permissions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Permission name (e.g. 'camera_view', 'email_send') "
+                        "OR a level ('low', 'medium', 'high', 'critical') to enable all at that level."
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "disable_permission",
+        "description": (
+            "Turn off a specific permission by name, or disable all permissions of a given "
+            "level by passing 'low', 'medium', 'high', or 'critical'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Permission name (e.g. 'camera_view') "
+                        "OR a level ('low', 'medium', 'high', 'critical') to disable all at that level."
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    # ── Profile / model switching ─────────────────────────────────────────────
+    {
+        "name": "switch_profile",
+        "description": (
+            "Switch the active assistant profile, changing the agent's name, personality, "
+            "voice, and LLM. Call this when the user asks to change the assistant persona."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Profile name, e.g. 'jarvis', 'aria', 'trina'."},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "list_profiles",
+        "description": "List all available assistant profiles and show which one is active.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
     {
         "name": "switch_model",
         "description": (
@@ -884,6 +1184,29 @@ def switch_model(provider: str, model: str = "") -> str:
     return f"Switched to Anthropic / {os.getenv('CLAUDE_MODEL', 'claude-sonnet-4-6')}."
 
 
+def switch_profile(name: str) -> str:
+    global _provider, _ollama_model
+    from agent_profile import load_profile, list_profiles as _lp
+    try:
+        load_profile(name)
+    except FileNotFoundError:
+        available = ", ".join(_lp())
+        return f"Profile '{name}' not found. Available: {available}."
+    # Sync LLM state with whatever the profile set
+    _provider     = os.getenv("LLM_PROVIDER",  _provider)
+    _ollama_model = os.getenv("OLLAMA_MODEL",  _ollama_model)
+    agent_name    = os.getenv("AGENT_NAME",    name)
+    return f"Profile switched to '{name}'. I'm now {agent_name}."
+
+
+def list_profiles() -> str:
+    from agent_profile import list_profiles as _lp, active_profile
+    profiles = _lp()
+    active   = active_profile()
+    lines = [f"{'* ' if p == active else '  '}{p}" for p in profiles]
+    return "Available profiles (* = active):\n" + "\n".join(lines)
+
+
 # ── History format helpers ────────────────────────────────────────────────────
 
 def _to_openai_tools() -> list[dict]:
@@ -902,7 +1225,7 @@ def _to_openai_tools() -> list[dict]:
 
 def _to_openai_history(history: list[dict]) -> list[dict]:
     """Convert Anthropic-format history to OpenAI-format messages."""
-    msgs: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    msgs: list[dict] = [{"role": "system", "content": _build_system_prompt()}]
     for msg in history:
         role    = msg["role"]
         content = msg["content"]
@@ -1044,7 +1367,7 @@ def _call_anthropic(history: list[dict]) -> str:
         resp = client.messages.create(
             model=model,
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=_build_system_prompt(),
             tools=TOOL_DEFINITIONS,
             messages=history,
         )
@@ -1070,6 +1393,22 @@ def _call_anthropic(history: list[dict]) -> str:
         else:
             return ""
 
+
+# ── Load active profile at startup ───────────────────────────────────────────
+
+def _load_startup_profile() -> None:
+    from agent_profile import load_profile, list_profiles as _lp
+    global _provider, _ollama_model
+    name = os.getenv("AGENT_PROFILE", "trina")
+    try:
+        load_profile(name)
+        _provider     = os.getenv("LLM_PROVIDER",  _provider)
+        _ollama_model = os.getenv("OLLAMA_MODEL",  _ollama_model)
+    except FileNotFoundError:
+        available = ", ".join(_lp())
+        print(f"[profile] Warning: profile '{name}' not found. Available: {available}")
+
+_load_startup_profile()
 
 # ── Public dispatcher ─────────────────────────────────────────────────────────
 
