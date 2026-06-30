@@ -1,0 +1,22 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Trina runtime data (workspace, DB, wake word model)
+TrinaDocs/
+*.db
+*.ppn
+
+# Editor
+.vscode/
+.idea/
+*.swp

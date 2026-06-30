@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trina</title>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --blue:   #0055ff;
+  --glow:   rgba(0, 80, 255, 0.18);
+  --dim:    rgba(0, 60, 200, 0.08);
+  --text:   #1e3060;
+  --text-hi:#3a6abf;
+}
+
+body {
+  background: #030310;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Courier New', monospace;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ── canvas ── */
+canvas {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── orb ── */
+#scene {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+#orb-wrap {
+  position: relative;
+  width: 260px;
+  height: 260px;
+}
+
+.orb-glow {
+  position: absolute;
+  inset: -70px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--glow) 0%, var(--dim) 45%, transparent 70%);
+  animation: glow-idle 4s ease-in-out infinite;
+}
+
+.orb-sphere {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%,
+    rgba(255,255,255,0.07) 0%,
+    rgba(20,65,210,0.12)  25%,
+    rgba(0,0,32,1)        62%,
+    rgba(0,0,14,1)        100%
+  );
+  box-shadow:
+    0 0 0 1px rgba(0,50,180,0.2),
+    0 0 50px  rgba(0,50,200,0.4),
+    0 0 130px rgba(0,25,150,0.5),
+    0 0 260px rgba(0,12,110,0.3),
+    inset 0 0 70px rgba(0,18,100,0.85),
+    inset 0 0 30px rgba(0,40,200,0.3);
+  animation: orb-idle 4s ease-in-out infinite;
+  transition: box-shadow 0.6s ease, animation-duration 0.3s;
+}
+
+.orb-rim {
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,70,220,0.15);
+  animation: rim-spin 20s linear infinite;
+}
+
+/* ── state: listening ── */
+body[data-state="listening"] .orb-sphere {
+  animation: orb-listen 2s ease-in-out infinite;
+  box-shadow:
+    0 0 0 1px rgba(0,70,200,0.3),
+    0 0 60px  rgba(0,70,220,0.5),
+    0 0 150px rgba(0,40,190,0.6),
+    0 0 300px rgba(0,20,140,0.4),
+    inset 0 0 80px rgba(0,25,130,0.9),
+    inset 0 0 40px rgba(0,55,210,0.4);
+}
+body[data-state="listening"] .orb-glow  { animation: glow-listen 2s ease-in-out infinite; }
+body[data-state="listening"] .orb-rim   { animation: rim-spin 12s linear infinite; border-color: rgba(0,90,255,0.3); }
+
+/* ── state: thinking ── */
+body[data-state="thinking"] .orb-sphere {
+  animation: orb-think 1s ease-in-out infinite;
+  box-shadow:
+    0 0 0 1px rgba(80,0,200,0.35),
+    0 0 70px  rgba(60,0,220,0.55),
+    0 0 160px rgba(40,0,190,0.55),
+    0 0 320px rgba(20,0,140,0.35),
+    inset 0 0 90px rgba(30,0,140,0.9),
+    inset 0 0 45px rgba(60,0,200,0.45);
+}
+body[data-state="thinking"] .orb-glow {
+  background: radial-gradient(circle, rgba(80,0,255,0.18) 0%, rgba(40,0,120,0.08) 45%, transparent 70%);
+  animation: glow-think 1s ease-in-out infinite;
+}
+body[data-state="thinking"] .orb-rim { animation: rim-spin 6s linear infinite; border-color: rgba(100,0,255,0.3); }
+
+/* ── state: speaking ── */
+body[data-state="speaking"] .orb-sphere {
+  animation: orb-speak 0.7s ease-in-out infinite;
+  box-shadow:
+    0 0 0 1px rgba(0,100,255,0.55),
+    0 0 80px  rgba(0,100,255,0.65),
+    0 0 200px rgba(0,65,220,0.7),
+    0 0 380px rgba(0,40,180,0.45),
+    inset 0 0 100px rgba(0,38,180,0.9),
+    inset 0 0 50px rgba(0,80,240,0.55);
+}
+body[data-state="speaking"] .orb-glow  { animation: glow-speak 0.8s ease-in-out infinite; }
+body[data-state="speaking"] .orb-rim   { animation: rim-spin 4s linear infinite; border-color: rgba(0,120,255,0.55); }
+
+@keyframes orb-idle   { 0%,100%{transform:scale(1);    filter:brightness(.80)} 50%{transform:scale(1.03);filter:brightness(1.02)} }
+@keyframes orb-listen { 0%,100%{transform:scale(1.01); filter:brightness(.95)} 50%{transform:scale(1.05);filter:brightness(1.10)} }
+@keyframes orb-think  { 0%,100%{transform:scale(1.02); filter:brightness(1.00)} 50%{transform:scale(1.07);filter:brightness(1.20)} }
+@keyframes orb-speak  { 0%,100%{transform:scale(1.04); filter:brightness(1.10)} 50%{transform:scale(1.13);filter:brightness(1.40)} }
+@keyframes glow-idle  { 0%,100%{opacity:.5;transform:scale(1)}   50%{opacity:.85;transform:scale(1.05)} }
+@keyframes glow-listen{ 0%,100%{opacity:.7;transform:scale(1.02)}50%{opacity:1;  transform:scale(1.08)} }
+@keyframes glow-think { 0%,100%{opacity:.75;transform:scale(1.03)}50%{opacity:1; transform:scale(1.10)} }
+@keyframes glow-speak { 0%,100%{opacity:.9;transform:scale(1.05)} 50%{opacity:1; transform:scale(1.15)} }
+@keyframes rim-spin   { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+
+/* ── labels ── */
+#status-label {
+  margin-top: 44px;
+  color: var(--text);
+  letter-spacing: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  transition: color 0.4s;
+  min-height: 18px;
+}
+
+body[data-state="listening"] #status-label { color: #2255aa; }
+body[data-state="thinking"]  #status-label { color: #5522aa; }
+body[data-state="speaking"]  #status-label { color: #2266cc; }
+
+#name-label {
+  margin-top: 10px;
+  color: #0d1a36;
+  letter-spacing: 12px;
+  font-size: 12px;
+}
+
+/* ── conversation log ── */
+#log {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(640px, 90vw);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+
+.msg {
+  max-width: 100%;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  line-height: 1.5;
+  opacity: 0;
+  animation: fade-in 0.4s ease forwards;
+  text-align: center;
+}
+.msg.you   { color: #2244aa; background: rgba(0,40,160,0.10); }
+.msg.trina { color: #1a8060; background: rgba(0,100,60,0.08); }
+.msg.live  { color: #152a60; background: transparent; font-style: italic; }
+
+@keyframes fade-in { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+
+/* ── start overlay ── */
+#overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(3,3,16,0.97);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  cursor: pointer;
+  transition: opacity 0.6s;
+}
+#overlay.hidden { opacity: 0; pointer-events: none; }
+
+#overlay .title {
+  color: #1b3070;
+  letter-spacing: 16px;
+  font-size: 18px;
+}
+#overlay .sub {
+  color: #0d1a40;
+  letter-spacing: 5px;
+  font-size: 10px;
+}
+#overlay .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #0044cc;
+  animation: dot-blink 1.8s ease-in-out infinite;
+}
+@keyframes dot-blink { 0%,100%{opacity:.2;transform:scale(1)} 50%{opacity:1;transform:scale(1.5)} }
+</style>
+</head>
+<body data-state="idle">
+
+<div id="overlay">
+  <div class="title">T R I N A</div>
+  <div class="dot"></div>
+  <div class="sub">click to begin</div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<div id="scene">
+  <div id="orb-wrap">
+    <div class="orb-glow"></div>
+    <div class="orb-sphere"></div>
+    <div class="orb-rim"></div>
+  </div>
+  <div id="status-label">idle</div>
+  <div id="name-label">T R I N A</div>
+</div>
+
+<div id="log"></div>
+
+<script>
+// ── Canvas / rings ─────────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+const resize = () => { canvas.width = innerWidth; canvas.height = innerHeight; };
+resize();
+window.addEventListener('resize', resize);
+
+const rings = [];
+let ringTimer = 0;
+
+function state() { return document.body.dataset.state; }
+
+function spawnRing() {
+  const s = state();
+  rings.push({
+    r:     132,
+    alpha: s === 'speaking' ? 0.6 : s === 'listening' ? 0.4 : 0.2,
+    speed: s === 'speaking' ? 3.0 : s === 'listening' ? 1.8 : 1.0,
+    color: s === 'thinking' ? '80,0,220' : '0,70,220',
+  });
+}
+
+let analyser  = null;
+let dataArray = null;
+
+function drawFrame() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+
+  ringTimer++;
+  const interval = state() === 'speaking' ? 12 : state() === 'listening' ? 30 : 80;
+  if (ringTimer >= interval) { spawnRing(); ringTimer = 0; }
+
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i];
+    ctx.beginPath();
+    ctx.arc(cx, cy, r.r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${r.color},${r.alpha.toFixed(3)})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    r.r     += r.speed;
+    r.alpha -= state() === 'speaking' ? 0.007 : 0.004;
+    if (r.alpha <= 0) rings.splice(i, 1);
+  }
+
+  if (state() === 'speaking' && analyser) {
+    analyser.getByteFrequencyData(dataArray);
+    const BARS = 80;
+    for (let i = 0; i < BARS; i++) {
+      const angle  = (i / BARS) * Math.PI * 2 - Math.PI / 2;
+      const sample = dataArray[Math.floor(i * dataArray.length / BARS)] / 255;
+      if (sample < 0.02) continue;
+      const r0 = 132, r1 = r0 + sample * 100;
+      const g  = Math.round(130 + sample * 125);
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(angle) * r0, cy + Math.sin(angle) * r0);
+      ctx.lineTo(cx + Math.cos(angle) * r1, cy + Math.sin(angle) * r1);
+      ctx.strokeStyle = `rgba(0,${g},255,${(0.25 + sample * 0.75).toFixed(2)})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+
+  requestAnimationFrame(drawFrame);
+}
+drawFrame();
+
+// ── State machine ─────────────────────────────────────────────────────────────
+const statusLabel = document.getElementById('status-label');
+const stateLabels = { idle:'idle', listening:'listening', thinking:'thinking…', speaking:'speaking' };
+
+function setState(s) {
+  document.body.dataset.state = s;
+  statusLabel.textContent = stateLabels[s] ?? s;
+}
+
+// ── Conversation log ──────────────────────────────────────────────────────────
+const log = document.getElementById('log');
+let liveEl = null;
+
+function addMsg(text, who) {
+  const el = document.createElement('div');
+  el.className = `msg ${who}`;
+  el.textContent = text;
+  log.appendChild(el);
+  while (log.children.length > 6) log.removeChild(log.firstChild);
+  return el;
+}
+
+// ── Audio playback ────────────────────────────────────────────────────────────
+let audioCtx  = null;
+let audioQueue = [];
+let audioPlaying = false;
+
+async function playNext() {
+  if (!audioQueue.length) { audioPlaying = false; return; }
+  audioPlaying = true;
+  const buf = audioQueue.shift();
+  try {
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const decoded = await audioCtx.decodeAudioData(buf);
+
+    if (!analyser) {
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+      analyser.connect(audioCtx.destination);
+    }
+
+    const src = audioCtx.createBufferSource();
+    src.buffer = decoded;
+    src.connect(analyser);
+    src.start();
+    src.onended = playNext;
+  } catch {
+    playNext();
+  }
+}
+
+// ── Mic capture via AudioWorklet ──────────────────────────────────────────────
+let ws       = null;
+let micNode  = null;
+let micCtx   = null;
+let micStream = null;
+
+async function startMic() {
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
+  });
+
+  micCtx = new AudioContext({ sampleRate: 16000 });
+  await micCtx.audioWorklet.addModule('/worklet.js');
+
+  const source = micCtx.createMediaStreamSource(micStream);
+  micNode = new AudioWorkletNode(micCtx, 'pcm-processor');
+
+  micNode.port.onmessage = (e) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(e.data);
+    }
+  };
+
+  source.connect(micNode);
+}
+
+// ── WebSocket to server ───────────────────────────────────────────────────────
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => setState('listening');
+
+  ws.onmessage = ({ data }) => {
+    if (data instanceof ArrayBuffer) {
+      // WAV audio from Gemini TTS
+      audioQueue.push(data.slice(0));
+      if (!audioPlaying) playNext();
+      return;
+    }
+
+    const msg = JSON.parse(data);
+
+    if (msg.type === 'state') {
+      setState(msg.value);
+
+      // When returning to listening after speaking, wait for audio to drain
+      if (msg.value === 'listening') {
+        const drain = setInterval(() => {
+          if (!audioPlaying) { setState('listening'); clearInterval(drain); }
+        }, 80);
+      }
+    }
+
+    if (msg.type === 'transcript') {
+      if (msg.is_final) {
+        if (liveEl) { liveEl.remove(); liveEl = null; }
+        // Don't add final transcript yet — wait for trina_text to pair it
+      } else {
+        if (!liveEl) { liveEl = addMsg('', 'live'); }
+        liveEl.textContent = msg.text;
+      }
+    }
+
+    if (msg.type === 'trina_text') {
+      // Finalise the user utterance that triggered this
+      if (liveEl) { liveEl.remove(); liveEl = null; }
+      // Find and promote any pending transcript
+      addMsg(msg.text, 'trina');
+    }
+  };
+
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    setState('idle');
+    setTimeout(connect, 2000);
+  };
+}
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+const overlay = document.getElementById('overlay');
+
+overlay.addEventListener('click', async () => {
+  audioCtx = new AudioContext();
+  overlay.classList.add('hidden');
+  await startMic();
+  connect();
+});
+</script>
+</body>
+</html>
