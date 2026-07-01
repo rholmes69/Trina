@@ -146,7 +146,13 @@ async def _listen_async(result_holder: list, thread_done: threading.Event) -> No
 
 
 def listen() -> str:
-    """Open the mic and block until Deepgram returns a final transcript."""
+    """Open the mic and block until we get a transcript."""
+    from stt import get_provider, transcribe_mic
+    if get_provider() == "whisper":
+        with console.status("[dim]listening…[/dim]", spinner="dots"):
+            return transcribe_mic()
+
+    # Deepgram path
     result_holder: list[str] = []
     thread_done = threading.Event()
 
@@ -304,7 +310,9 @@ def run(text_mode: bool) -> None:
 def _check_env(text_mode: bool) -> None:
     required = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY"]
     if not text_mode:
-        required.append("DEEPGRAM_API_KEY")
+        from stt import get_provider
+        if get_provider() != "whisper":
+            required.append("DEEPGRAM_API_KEY")
     missing = [v for v in required if not os.environ.get(v)]
     if missing:
         for v in missing:

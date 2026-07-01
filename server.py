@@ -65,17 +65,12 @@ def _agent_config() -> dict:
     }
 
 
-@app.websocket("/ws")
-async def ws_session(browser: WebSocket):
-    await browser.accept()
-
-    # Push ring color + agent name immediately so UI theme matches startup profile
-    await browser.send_json(_agent_config())
-
+async def _ws_session_deepgram(browser: WebSocket) -> None:
+    """Deepgram cloud STT path — streams browser PCM to Deepgram, handles transcripts."""
     history: list[dict] = []
     parts: list[str]    = []
     busy                = asyncio.Lock()
-    _last_config: dict  = _agent_config()
+    last_config: dict   = _agent_config()
 
     try:
         from websockets.asyncio.client import connect as dg_connect
@@ -86,7 +81,6 @@ async def ws_session(browser: WebSocket):
 
     async with dg_connect(_DG_URL, additional_headers=dg_headers) as dg_ws:
 
-        # ── Task 1: browser PCM → Deepgram ────────────────────────────────────
         audio_chunks = 0
 
         async def forward_audio():
@@ -105,7 +99,6 @@ async def ws_session(browser: WebSocket):
             except Exception as e:
                 print(f"[audio] forward_audio error: {e}", flush=True)
 
-        # ── Task 2: Deepgram transcripts → Claude → TTS → browser ────────────
         async def handle_transcripts():
             try:
                 async for raw in dg_ws:
@@ -116,21 +109,14 @@ async def ws_session(browser: WebSocket):
                         print(f"[dg] non-Results message: {msg.get('type')}", flush=True)
                         continue
 
-                    alts = msg.get("channel", {}).get("alternatives", [{}])
-                    text = alts[0].get("transcript", "")
-                    is_final    = msg.get("is_final", False)
+                    alts         = msg.get("channel", {}).get("alternatives", [{}])
+                    text         = alts[0].get("transcript", "")
+                    is_final     = msg.get("is_final", False)
                     speech_final = msg.get("speech_final", False)
 
                     if text:
                         print(f"[dg] transcript is_final={is_final} speech_final={speech_final}: {text!r}", flush=True)
-
-                    # Stream interim transcript to browser for live display
-                    if text:
-                        await browser.send_json({
-                            "type": "transcript",
-                            "text": text,
-                            "is_final": is_final,
-                        })
+                        await browser.send_json({"type": "transcript", "text": text, "is_final": is_final})
 
                     if is_final and text:
                         parts.append(text)
@@ -141,39 +127,14 @@ async def ws_session(browser: WebSocket):
 
                         if busy.locked():
                             print("[trina] busy — skipping utterance", flush=True)
-                            parts.clear()
                             continue
 
                         async with busy:
-                            print(f"[trina] → Claude: {user_text!r}", flush=True)
-                            await browser.send_json({"type": "state", "value": "thinking"})
-
-                            history.append({"role": "user", "content": user_text})
-                            reply = await _call_claude(history)
-                            history.append({"role": "assistant", "content": reply})
-
-                            # Push updated config if a profile switch changed ring color or name
-                            new_cfg = _agent_config()
-                            if new_cfg != _last_config:
-                                _last_config.update(new_cfg)
-                                await browser.send_json(new_cfg)
-
-                            print(f"[trina] ← Claude: {reply!r}", flush=True)
-                            await browser.send_json({"type": "trina_text", "text": reply})
-                            await browser.send_json({"type": "state", "value": "speaking"})
-
-                            wav = await _generate_speech(reply)
-                            if wav:
-                                await browser.send_bytes(wav)
-                            else:
-                                print("[trina] TTS returned no audio", flush=True)
-
-                            await browser.send_json({"type": "state", "value": "listening"})
+                            await _handle_turn(browser, history, last_config, user_text)
 
             except Exception as e:
                 print(f"[dg] handle_transcripts error: {e}", flush=True)
 
-        # ── Task 3: fire due reminders into the session ───────────────────────
         async def reminder_checker():
             from tools import check_due_reminders
             while True:
@@ -186,16 +147,113 @@ async def ws_session(browser: WebSocket):
                         if busy.locked():
                             continue
                         async with busy:
-                            await browser.send_json({"type": "trina_text", "text": text})
-                            await browser.send_json({"type": "state", "value": "speaking"})
-                            wav = await _generate_speech(text)
-                            if wav:
-                                await browser.send_bytes(wav)
-                            await browser.send_json({"type": "state", "value": "listening"})
+                            await _speak_to_browser(browser, text)
                 except Exception:
                     break
 
         await asyncio.gather(forward_audio(), handle_transcripts(), reminder_checker())
+
+
+async def _ws_session_whisper(browser: WebSocket) -> None:
+    """faster-whisper local STT path — accumulates browser PCM, detects silence, transcribes."""
+    from stt import WhisperSession
+
+    history: list[dict] = []
+    busy                = asyncio.Lock()
+    last_config: dict   = _agent_config()
+    session             = WhisperSession()
+
+    async def receive_audio():
+        try:
+            while True:
+                data = await browser.receive()
+                if data["type"] == "websocket.disconnect":
+                    break
+                raw = data.get("bytes")
+                if not raw:
+                    continue
+                session.feed(raw)
+                if session.ready():
+                    loop = asyncio.get_running_loop()
+                    user_text = await loop.run_in_executor(None, session.flush)
+                    if user_text:
+                        print(f"[whisper] transcript: {user_text!r}", flush=True)
+                        await browser.send_json({"type": "transcript", "text": user_text, "is_final": True})
+                        if not busy.locked():
+                            asyncio.create_task(_run_turn(user_text))
+                        else:
+                            print("[trina] busy — skipping utterance", flush=True)
+        except Exception as e:
+            print(f"[whisper] receive_audio error: {e}", flush=True)
+
+    async def _run_turn(user_text: str):
+        async with busy:
+            await _handle_turn(browser, history, last_config, user_text)
+
+    async def reminder_checker():
+        from tools import check_due_reminders
+        while True:
+            await asyncio.sleep(20)
+            try:
+                loop = asyncio.get_running_loop()
+                due = await loop.run_in_executor(None, check_due_reminders)
+                for msg in due:
+                    text = f"Reminder: {msg}"
+                    if busy.locked():
+                        continue
+                    async with busy:
+                        await _speak_to_browser(browser, text)
+            except Exception:
+                break
+
+    await asyncio.gather(receive_audio(), reminder_checker())
+
+
+async def _handle_turn(
+    browser: WebSocket,
+    history: list[dict],
+    last_config: dict,
+    user_text: str,
+) -> None:
+    """Run one Claude turn: think → reply → TTS → push to browser."""
+    print(f"[trina] → Claude: {user_text!r}", flush=True)
+    await browser.send_json({"type": "state", "value": "thinking"})
+
+    history.append({"role": "user", "content": user_text})
+    reply = await _call_claude(history)
+    history.append({"role": "assistant", "content": reply})
+
+    new_cfg = _agent_config()
+    if new_cfg != last_config:
+        last_config.update(new_cfg)
+        await browser.send_json(new_cfg)
+
+    print(f"[trina] ← Claude: {reply!r}", flush=True)
+    await browser.send_json({"type": "trina_text", "text": reply})
+    await _speak_to_browser(browser, reply)
+
+
+async def _speak_to_browser(browser: WebSocket, text: str) -> None:
+    """TTS a string and stream the WAV bytes to the browser."""
+    await browser.send_json({"type": "state", "value": "speaking"})
+    wav = await _generate_speech(text)
+    if wav:
+        await browser.send_bytes(wav)
+    else:
+        print("[trina] TTS returned no audio", flush=True)
+    await browser.send_json({"type": "state", "value": "listening"})
+
+
+@app.websocket("/ws")
+async def ws_session(browser: WebSocket):
+    await browser.accept()
+    await browser.send_json(_agent_config())
+
+    from stt import get_provider
+    if get_provider() == "whisper":
+        await _ws_session_whisper(browser)
+    else:
+        await _ws_session_deepgram(browser)
 
     try:
         await browser.close()
