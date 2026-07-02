@@ -58,6 +58,11 @@ to them.
 You can see through the webcam (describe_camera) or describe any image file
 in the workspace (describe_image). These always use Claude vision.
 
+You can search across all documents in the workspace semantically
+(search_documents). Use this whenever the user asks about something they wrote,
+a past note, a file, or any content stored in their workspace. You can also
+index_workspace to refresh the search index after new files are added.
+
 When you finish a task, confirm it's done and mention the file or folder name.
 Keep replies brief unless the user asks for depth.\
 """
@@ -578,6 +583,18 @@ def generate_contacts_csv(path: str, count: int) -> str:
     return str(p)
 
 
+def search_documents(query: str, n: int = 5) -> str:
+    """Semantic search across indexed workspace documents."""
+    from rag import search
+    return search(query, n=n)
+
+
+def index_workspace() -> str:
+    """Re-index all workspace documents into the RAG store."""
+    from rag import index_workspace as _index
+    return _index(verbose=False)
+
+
 def execute_tool(name: str, inputs: dict) -> str:
     try:
         if name == "switch_model":
@@ -615,6 +632,10 @@ def execute_tool(name: str, inputs: dict) -> str:
         if name == "generate_contacts_csv":
             p = generate_contacts_csv(inputs["path"], inputs["count"])
             return f"CSV ready: {p}  ({inputs['count']} records)"
+        if name == "search_documents":
+            return search_documents(inputs["query"], int(inputs.get("n", 5)))
+        if name == "index_workspace":
+            return index_workspace()
         return f"Unknown tool: {name}"
     except Exception as exc:
         return f"Error executing {name}: {exc}"
@@ -866,6 +887,40 @@ TOOL_DEFINITIONS = [
             },
             "required": ["path", "count"],
         },
+    },
+    {
+        "name": "search_documents",
+        "description": (
+            "Semantically search all documents indexed from the workspace. "
+            "Use this when the user asks about something they wrote, a past note, "
+            "a file, a meeting, a proposal, or any content in their files. "
+            "Returns the most relevant passages with source file names."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language search query, e.g. 'client proposal March' or 'budget notes Q2'.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 5, max 20).",
+                    "minimum": 1,
+                    "maximum": 20,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "index_workspace",
+        "description": (
+            "Re-index all documents in the workspace so they appear in search results. "
+            "Call this after the user adds new files, or if search returns no results. "
+            "Takes a moment for large workspaces."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
     },
 ]
 
